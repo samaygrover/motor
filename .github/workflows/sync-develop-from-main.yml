@@ -7,7 +7,8 @@ name: sync-develop-from-main
 # two stay in sync. If `develop` has diverged (genuine in-flight work), the
 # fast-forward fails and we fall back to opening a tracking PR for review.
 #
-# Triggers on push to main only — never runs on PR events to avoid loops.
+# Uses raw `git` + `gh` (both pre-installed on ubuntu-latest) to stay
+# compatible with strict `allowed_actions: local_only` repo policies.
 
 on:
   push:
@@ -22,38 +23,39 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-          ref: develop
-      - name: Configure git
+      - name: Sync develop from main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-      - name: Fast-forward develop to main
-        id: ff
-        run: |
-          git fetch origin main:main
+          set -euo pipefail
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git clone --quiet "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" repo
+          cd repo
+          git fetch origin main:main develop:develop
+          git checkout develop
+
+          if git merge-base --is-ancestor main develop; then
+            echo "develop already contains main — no-op"
+            exit 0
+          fi
+
           if git merge-base --is-ancestor develop main; then
             echo "develop is behind main — fast-forwarding"
             git merge --ff-only main
             git push origin develop
-            echo "result=ff" >> "$GITHUB_OUTPUT"
-          elif git merge-base --is-ancestor main develop; then
-            echo "develop already contains main — no-op"
-            echo "result=noop" >> "$GITHUB_OUTPUT"
-          else
-            echo "develop has diverged from main — cannot fast-forward, opening sync PR"
-            echo "result=diverged" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-      - name: Open sync PR if diverged
-        if: steps.ff.outputs.result == 'diverged'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
+
+          echo "develop has diverged from main — opening sync PR"
           BRANCH="auto-sync/main-into-develop-${{ github.run_id }}"
           git checkout -b "$BRANCH" develop
-          git merge main --no-edit || (git merge --abort && exit 1)
+          if ! git merge main --no-edit; then
+            git merge --abort
+            echo "::error::Merge of main into develop produced conflicts. Resolve manually."
+            exit 1
+          fi
           git push origin "$BRANCH"
           gh pr create --base develop --head "$BRANCH" \
             --title "auto-sync: merge main into develop" \
