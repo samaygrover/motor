@@ -31,27 +31,29 @@ jobs:
           set -euo pipefail
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git clone --quiet "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" repo
-          cd repo
-          git fetch origin main:main develop:develop
-          git checkout develop
 
-          if git merge-base --is-ancestor main develop; then
+          # Fresh clone with develop checked out, fetch main as a tracking ref
+          git clone --quiet --branch develop \
+            "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" repo
+          cd repo
+          git fetch origin main
+
+          if git merge-base --is-ancestor origin/main HEAD; then
             echo "develop already contains main — no-op"
             exit 0
           fi
 
-          if git merge-base --is-ancestor develop main; then
+          if git merge-base --is-ancestor HEAD origin/main; then
             echo "develop is behind main — fast-forwarding"
-            git merge --ff-only main
+            git merge --ff-only origin/main
             git push origin develop
             exit 0
           fi
 
           echo "develop has diverged from main — opening sync PR"
           BRANCH="auto-sync/main-into-develop-${{ github.run_id }}"
-          git checkout -b "$BRANCH" develop
-          if ! git merge main --no-edit; then
+          git checkout -b "$BRANCH"
+          if ! git merge origin/main --no-edit; then
             git merge --abort
             echo "::error::Merge of main into develop produced conflicts. Resolve manually."
             exit 1
